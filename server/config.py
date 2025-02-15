@@ -1,53 +1,67 @@
+# import secrets
+import os
 import jwt
 import datetime
+from dotenv import load_dotenv
 from functools import wraps
-from flask import request, jsonify, current_app
+from flask import request, jsonify
 
-SECRET_KEY = ""
+load_dotenv()
 
-def generate_jwt(user_identifier):
-    token = jwt.encode({
-        "sub": user_identifier,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
-    }, SECRET_KEY, algorithm="HS256")
-    
-    print(f"Generated JWT Token: {token}")
-    return token
+class Config:
+    SECRET_KEY = os.getenv("SECRET_KEY")
 
-def decode_jwt(token):
-    try:
-        decoded_token = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        print(f"Decoded JWT Token: {decoded_token}")
-        return decoded_token
-    except jwt.ExpiredSignatureError:
-        print("Token has expired!")
-        return None
-    except jwt.InvalidTokenError:
-        print("Invalid token!")
-        return None
+    @staticmethod
+    def generate_jwt(user_identifier, role):
+        token = jwt.encode({
+            "sub": user_identifier,
+            "role": role,
+            "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+        }, Config.SECRET_KEY, algorithm="HS256")
+        return token
 
+# Middleware to protect routes
 def token_required(f):
     @wraps(f)
-    def decorated_function(*args, **kwargs):
-        token = request.headers.get('Authorization')
-        
+    def decorated(*args, **kwargs):
+        token = None
+
+        if "Authorization" in request.headers:
+            try:
+                token = request.headers["Authorization"].split(" ")[1]  # Fix split error
+            except IndexError:
+                return jsonify({"message": "Invalid token format"}), 401
+
         if not token:
-            print("Token is missing!")
-            return jsonify({"message": "Token is missing!"}), 403
-        
-        if token.startswith('Bearer '):
-            token = token[7:]
-        
-        print(f"Received JWT Token: {token}")
-        
-        decoded_token = decode_jwt(token)
-        
-        if decoded_token is None:
-            print("Token is invalid or expired!")
-            return jsonify({"message": "Token is invalid or expired!"}), 403
-        
-        current_user = decoded_token["sub"]
-        
-        return f(current_user, *args, **kwargs)
-    
-    return decorated_function
+            return jsonify({"message": "Token is missing"}), 401
+
+        try:
+            data = jwt.decode(token, Config.SECRET_KEY, algorithms=["HS256"])
+            request.user = {"user_id": data["sub"], "role": data.get("role")}
+        except jwt.ExpiredSignatureError:
+            return jsonify({"message": "Token is expired"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"message": "Invalid token"}), 401
+
+        return f(*args, **kwargs)
+
+    return decorated
+
+# Restricting access by role
+def role_required(required_role):
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            if not hasattr(request, "user"):
+                return jsonify({"message": "Token verification failed"}), 401
+
+            if request.user["role"] != required_role:
+                return jsonify({"message": "Unauthorized: Insufficient permissions"}), 403
+
+            return f(*args, **kwargs)
+
+        return wrapper
+    return decorator
+
+# secret_key = secrets.token_hex(32)
+# print("Secret key:", secret_key)

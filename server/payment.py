@@ -1,84 +1,81 @@
-from flask import Blueprint, jsonify, request
-from models import Payment
+from flask import Blueprint, request, jsonify
+from bson import ObjectId, errors
 from config import token_required
-from bson import ObjectId
+from models import Payment
 
 paymentBluePrint = Blueprint('payment', __name__)
 
-@paymentBluePrint.route('/payments', methods=['GET'])
-def get_all_payments():
-    payments = []
-    for payment in Payment.collection.find():
-        payments.append({
-            'id': str(payment['_id']),
-            'booking_id': payment['booking_id'],
-            'amount': payment['amount'],
-            'payment_method': payment['payment_method'],
-            'status': payment['status'],
-            'transaction_reference': payment['transaction_reference']
-        })
-    return jsonify(payments), 200
+# Get all payments
+@paymentBluePrint.route("/payments", methods=["GET"])
+@token_required
+def get_payments():
+    payments = Payment.collection.find()
+    payment_list = [{"_id": str(payment["_id"]), **payment} for payment in payments]
+    return jsonify(payment_list), 200
 
-@paymentBluePrint.route('/payment/<string:payment_id>', methods=['GET'])
+# Get payment by ID
+@paymentBluePrint.route("/payments/<payment_id>", methods=["GET"])
+@token_required
 def get_payment_by_id(payment_id):
-    payment = Payment.collection.find_one({"_id": ObjectId(payment_id)})
+    try:
+        payment_obj_id = ObjectId(str(payment_id))  
+        payment = Payment.collection.find_one({"_id": payment_obj_id})
+        if not payment:
+            return jsonify({"message": "Payment not found"}), 404
+        payment["_id"] = str(payment["_id"])
+        return jsonify(payment), 200
+    except errors.InvalidId:
+        return jsonify({"message": "Invalid payment ID format"}), 400
 
-    if not payment:
-        return jsonify({"message": "Payment not found"}), 404
-
-    return jsonify({
-        'id': str(payment['_id']),
-        'booking_id': payment['booking_id'],
-        'amount': payment['amount'],
-        'payment_method': payment['payment_method'],
-        'status': payment['status'],
-        'transaction_reference': payment['transaction_reference']
-    }), 200
-
-@paymentBluePrint.route('/payment', methods=['POST'])
+# Create a payment
+@paymentBluePrint.route("/payments", methods=["POST"])
 @token_required
-def create_payment(current_user):
-    data = request.json
-
-    if not data or 'booking_id' not in data or 'amount' not in data or 'payment_method' not in data or 'status' not in data or 'transaction_reference' not in data:
-        return jsonify({"message": "Missing required fields"}), 400
-
-    new_payment = {
-        "booking_id": data['booking_id'],
-        "amount": data['amount'],
-        "payment_method": data['payment_method'],
-        "status": data['status'],
-        "transaction_reference": data['transaction_reference']
-    }
-
-    result = Payment.collection.insert_one(new_payment)
-    return jsonify({"message": "Payment created", "id": str(result.inserted_id)}), 201
-
-@paymentBluePrint.route('/payment/<string:payment_id>', methods=['PUT', 'PATCH'])
-@token_required
-def update_payment(current_user, payment_id):
-    data = request.json
+def create_payment():
+    data = request.get_json()
 
     if not data:
-        return jsonify({"message": "No update data provided"}), 400
+        return jsonify({"message": "No data provided"}), 400
 
-    updated_payment = Payment.collection.find_one_and_update(
-        {"_id": ObjectId(payment_id)},
-        {"$set": data},
-        return_document=True
-    )
+    try:
+        payment_id = Payment.create_payment(
+            booking_id=str(data["booking_id"]),
+            amount=data["amount"],
+            payment_method=data["payment_method"],
+            status=data.get("status", "Pending"),
+            transaction_reference=data["transaction_reference"]  
+        )
+        return jsonify({"message": "Payment created", "payment_id": payment_id}), 201
+    except Exception as e:
+        return jsonify({"message": str(e)}), 500
 
-    if not updated_payment:
-        return jsonify({"message": "Payment not found"}), 404
-
-    return jsonify({"message": "Payment updated successfully"}), 200
-
-@paymentBluePrint.route('/payment/<string:payment_id>', methods=['DELETE'])
+# Update payment
+@paymentBluePrint.route("/payments/<payment_id>", methods=["PUT", "PATCH"])
 @token_required
-def delete_payment(current_user, payment_id):
-    deleted_payment = Payment.collection.find_one_and_delete({"_id": ObjectId(payment_id)})
+def update_payment(payment_id):
+    try:
+        payment_obj_id = ObjectId(str(payment_id))  
+    except errors.InvalidId:
+        return jsonify({"message": "Invalid payment ID format"}), 400
 
-    if not deleted_payment:
+    data = request.get_json()
+    if not data:
+        return jsonify({"message": "No data provided"}), 400
+
+    result = Payment.collection.update_one({"_id": payment_obj_id}, {"$set": data})
+    if result.matched_count == 0:
         return jsonify({"message": "Payment not found"}), 404
+    return jsonify({"message": "Payment updated"}), 200
 
-    return jsonify({"message": "Payment deleted successfully"}), 200
+# Delete payment
+@paymentBluePrint.route("/payments/<payment_id>", methods=["DELETE"])
+@token_required
+def delete_payment(payment_id):
+    try:
+        payment_obj_id = ObjectId(str(payment_id))
+    except errors.InvalidId:
+        return jsonify({"message": "Invalid payment ID format"}), 400
+
+    result = Payment.collection.delete_one({"_id": payment_obj_id})
+    if result.deleted_count == 0:
+        return jsonify({"message": "Payment not found"}), 404
+    return jsonify({"message": "Payment deleted"}), 200
